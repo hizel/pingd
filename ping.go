@@ -2,10 +2,10 @@ package main
 
 import (
 	"github.com/tatsushid/go-fastping"
-	"net"
-	"time"
 	"log"
+	"net"
 	"sync"
+	"time"
 )
 
 type response struct {
@@ -50,12 +50,10 @@ loop:
 					store[host].LastCheck = time.Now()
 					store[host].Values.Value = &CheckValue{time.Now(), 0}
 					store[host].Values = store[host].Values.Next()
-					log.Printf("%s : unreachable %v\n", host, time.Now())
 				} else {
 					store[host].LastCheck = time.Now()
 					store[host].Values.Value = &CheckValue{time.Now(), r.rtt}
 					store[host].Values = store[host].Values.Next()
-					log.Printf("%s : %v %v\n", host, r.rtt, time.Now())
 				}
 				lock.RUnlock()
 				results[host] = nil
@@ -64,7 +62,7 @@ loop:
 			log.Println("%v failed: %v", ra, err)
 			c <- true
 		case <-wait:
-			break loop;
+			break loop
 		}
 	}
 	log.Printf("exit %v", ra)
