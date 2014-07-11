@@ -45,17 +45,13 @@ loop:
 			}
 		case <-onIdle:
 			for host, r := range results {
-				lock.RLock()
+				lock.Lock()
 				if r == nil {
-					store[host].LastCheck = time.Now()
-					store[host].Values.Value = &CheckValue{time.Now(), 0}
-					store[host].Values = store[host].Values.Next()
+					store[host].Insert(0)
 				} else {
-					store[host].LastCheck = time.Now()
-					store[host].Values.Value = &CheckValue{time.Now(), r.rtt}
-					store[host].Values = store[host].Values.Next()
+					store[host].Insert(r.rtt)
 				}
-				lock.RUnlock()
+				lock.Unlock()
 				results[host] = nil
 			}
 		case err := <-errch:

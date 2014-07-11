@@ -2,24 +2,47 @@ package main
 
 import (
 	"container/ring"
+	"flag"
 	"github.com/ant0ine/go-json-rest/rest"
+	"github.com/marpaia/graphite-golang"
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
 
+const DefGraphHost = "127.0.0.1"
+const DefGraphPort = 2003
+const DefRTT = 3        // Seconds
+const DefCircleLen = 10 // length circular buffer for ping duration results
+const DefMainMetric = "pingd"
+
+var graph *graphite.Graphite
+
 func main() {
+	var graphHost string
+	var graphPort int
+	flag.StringVar(&graphHost, "h", DefGraphHost, "carbon host")
+	flag.IntVar(&graphPort, "p", DefGraphPort, "carbon port, 2003")
+	flag.Parse()
+
+	graphite, err := graphite.NewGraphite(graphHost, graphPort)
+	if err != nil {
+		log.Fatal(err)
+	}
+	graph = graphite
+
 	handler := rest.ResourceHandler{
 		EnableRelaxedContentType: true,
 	}
 
-	err := handler.SetRoutes(
+	err = handler.SetRoutes(
 		&rest.Route{"GET", "/hosts", GetAll},
 		&rest.Route{"POST", "/hosts", Post},
-		&rest.Route{"GET", "/hosts/*address", Get},
-		&rest.Route{"DELETE", "/hosts/*address", Delete},
+		&rest.Route{"GET", "/hosts/:id", Get},
+		&rest.Route{"DELETE", "/hosts/:id", Delete},
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -28,18 +51,11 @@ func main() {
 }
 
 type Host struct {
+	Id      string
 	Address string
 }
 
 type HostStore struct {
-	Host
-	LastCheck time.Time
-	Values    *ring.Ring
-
-	q chan bool
-}
-
-type HostExport struct {
 	Host
 	LastCheck time.Time
 	Avg       float64
@@ -47,6 +63,9 @@ type HostExport struct {
 	Max       float64
 	Last      float64
 	Loss      int
+
+	values *ring.Ring
+	q      chan bool
 }
 
 type CheckValue struct {
@@ -58,43 +77,50 @@ func (s *HostStore) Stop() {
 	s.q <- true
 }
 
-func (s *HostStore) Calc() *HostExport {
-	ret := &HostExport{}
-	ret.Address = s.Address
-	ret.LastCheck = s.LastCheck
-
+func (s *HostStore) Insert(rtt time.Duration) {
+	now := time.Now()
+	s.LastCheck = now
+	s.values.Value = &CheckValue{now, rtt}
+	s.values = s.values.Next()
 	var n int
 	n = 0
-	ret.Loss = 0
+	s.Loss = 0
 
-	s.Values.Do(func(x interface{}) {
+	s.values.Do(func(x interface{}) {
 		v, ok := x.(*CheckValue)
 		if ok {
 			if n == 0 && v.Duration != 0 {
-				ret.Avg = v.Duration.Seconds()
-				ret.Max = v.Duration.Seconds()
-				ret.Min = v.Duration.Seconds()
-				ret.Last = v.Duration.Seconds()
+				s.Avg = v.Duration.Seconds()
+				s.Max = v.Duration.Seconds()
+				s.Min = v.Duration.Seconds()
+				s.Last = v.Duration.Seconds()
 			}
 			if n != 0 && v.Duration != 0 {
-				ret.Avg += v.Duration.Seconds()
-				if v.Duration.Seconds() > ret.Max {
-					ret.Max = v.Duration.Seconds()
+				s.Avg += v.Duration.Seconds()
+				if v.Duration.Seconds() > s.Max {
+					s.Max = v.Duration.Seconds()
 				}
-				if v.Duration.Seconds() < ret.Min {
-					ret.Min = v.Duration.Seconds()
+				if v.Duration.Seconds() < s.Min {
+					s.Min = v.Duration.Seconds()
 				}
-				ret.Last = v.Duration.Seconds()
+				s.Last = v.Duration.Seconds()
 			}
 			if v.Duration == 0 {
-				ret.Loss++
+				s.Loss++
 			}
 			n++
 		}
 	})
 
-	ret.Avg = ret.Avg / float64(n)
-	return ret
+	s.Avg = s.Avg / float64(n)
+
+	metric := DefMainMetric + "." + s.Id + "."
+
+	go graph.SendMetric(graphite.Metric{metric + "rtt", strconv.FormatFloat(s.Last, 'g', 12, 64), now.Unix()})
+	go graph.SendMetric(graphite.Metric{metric + "avg", strconv.FormatFloat(s.Avg, 'g', 12, 64), now.Unix()})
+	go graph.SendMetric(graphite.Metric{metric + "max", strconv.FormatFloat(s.Max, 'g', 12, 64), now.Unix()})
+	go graph.SendMetric(graphite.Metric{metric + "min", strconv.FormatFloat(s.Min, 'g', 12, 64), now.Unix()})
+	go graph.SendMetric(graphite.Metric{metric + "loss", strconv.FormatInt(int64(s.Loss), 10), now.Unix()})
 }
 
 var store = map[string]*HostStore{}
@@ -102,27 +128,27 @@ var store = map[string]*HostStore{}
 var lock = sync.RWMutex{}
 
 func Get(w rest.ResponseWriter, r *rest.Request) {
-	address := r.PathParam("address")
+	id := r.PathParam("id")
 	lock.RLock()
 	var host *HostStore
-	if store[address] != nil {
+	if store[id] != nil {
 		host = &HostStore{}
-		*host = *store[address]
+		*host = *store[id]
 	}
 	lock.RUnlock()
 	if host == nil {
 		rest.NotFound(w, r)
 		return
 	}
-	w.WriteJson(host.Calc())
+	w.WriteJson(host)
 }
 
 func GetAll(w rest.ResponseWriter, r *rest.Request) {
 	lock.RLock()
-	hosts := make([]HostExport, len(store))
+	hosts := make([]HostStore, len(store))
 	i := 0
 	for _, host := range store {
-		hosts[i] = *host.Calc()
+		hosts[i] = *host
 		i++
 	}
 	lock.RUnlock()
@@ -136,6 +162,10 @@ func Post(w rest.ResponseWriter, r *rest.Request) {
 		rest.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if host.Id == "" {
+		rest.Error(w, "id required", 400)
+		return
+	}
 	if host.Address == "" {
 		rest.Error(w, "address required", 400)
 		return
@@ -146,20 +176,26 @@ func Post(w rest.ResponseWriter, r *rest.Request) {
 		return
 	}
 	lock.Lock()
-	c := make(chan bool, 1)
-	store[host.Address] = &HostStore{host, time.Now(), ring.New(10), c}
-	go ping(ra, time.Second*3, c, &lock, store)
+	q := make(chan bool, 1) // chan for stop ping
+	store[host.Id] = &HostStore{
+		host,
+		time.Now(),
+		0.0, 0.0, 0.0, 0.0,
+		0,
+		ring.New(DefCircleLen),
+		q}
+	go ping(ra, time.Second*DefRTT, q, &lock, store)
 	lock.Unlock()
 	w.WriteJson(&host)
 }
 
 func Delete(w rest.ResponseWriter, r *rest.Request) {
-	address := r.PathParam("address")
+	id := r.PathParam("id")
 	lock.Lock()
-	host := store[address]
+	host := store[id]
 	if host != nil {
 		host.Stop()
-		delete(store, address)
+		delete(store, id)
 		w.WriteHeader(http.StatusOK)
 	} else {
 		rest.NotFound(w, r)
