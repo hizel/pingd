@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-const DefGraphHost = "127.0.0.1"
-const DefGraphPort = 2003
+const DefGraph = "127.0.0.1:2003"
+const DefApi = ":8081"
 const DefRTT = 3        // Seconds
 const DefCircleLen = 10 // length circular buffer for ping duration results
 const DefMainMetric = "pingd"
@@ -22,13 +22,23 @@ const DefMainMetric = "pingd"
 var graph *graphite.Graphite
 
 func main() {
-	var graphHost string
-	var graphPort int
-	flag.StringVar(&graphHost, "h", DefGraphHost, "carbon host")
-	flag.IntVar(&graphPort, "p", DefGraphPort, "carbon port, 2003")
+	var apiVar string
+	var graphVar string
+
+	flag.StringVar(&apiVar, "api", DefApi, "api host:port")
+	flag.StringVar(&graphVar, "graphite", DefGraph, "graphite export host port")
 	flag.Parse()
 
-	graphite, err := graphite.NewGraphite(graphHost, graphPort)
+	graphHost, graphPort, err := net.SplitHostPort(graphVar)
+	if err != nil {
+		log.Fatal("graphite host:port ", err)
+	}
+	graphPortInt, err := strconv.Atoi(graphPort)
+	if err != nil {
+		log.Fatal("graphite port ", err)
+	}
+
+	graphite, err := graphite.NewGraphite(graphHost, graphPortInt)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -47,7 +57,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Fatal(http.ListenAndServe(":8080", &handler))
+	log.Fatal(http.ListenAndServe(apiVar, &handler))
 }
 
 type Host struct {
