@@ -194,7 +194,7 @@ func Post(w rest.ResponseWriter, r *rest.Request) {
 		0,
 		ring.New(DefCircleLen),
 		q}
-	go ping(ra, time.Second*DefRTT, q, &lock, store)
+	go ping(host.Id, ra, time.Second*DefRTT, q, &lock, store)
 	lock.Unlock()
 	w.WriteJson(&host)
 }

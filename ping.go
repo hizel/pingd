@@ -13,7 +13,7 @@ type response struct {
 	rtt  time.Duration
 }
 
-func ping(ra *net.IPAddr, rtt time.Duration, c chan bool, lock *sync.RWMutex, store map[string]*HostStore) {
+func ping(host string, ra *net.IPAddr, rtt time.Duration, c chan bool, lock *sync.RWMutex, store map[string]*HostStore) {
 	p := fastping.NewPinger()
 
 	results := make(map[string]*response)
@@ -44,7 +44,7 @@ loop:
 				results[res.addr.String()] = res
 			}
 		case <-onIdle:
-			for host, r := range results {
+			for v, r := range results {
 				lock.Lock()
 				if r == nil {
 					store[host].Insert(0)
@@ -52,7 +52,7 @@ loop:
 					store[host].Insert(r.rtt)
 				}
 				lock.Unlock()
-				results[host] = nil
+				results[v] = nil
 			}
 		case err := <-errch:
 			log.Println("%v failed: %v", ra, err)
